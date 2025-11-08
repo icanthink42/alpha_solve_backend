@@ -233,7 +233,7 @@ func main() {
 	})
 
 	// Start server
-	addr := ":8080"
+	addr := ":80"
 	log.Printf("[Server] Starting WebSocket server on %s", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatal("[Server] ListenAndServe error: ", err)
