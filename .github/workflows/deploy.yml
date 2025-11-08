@@ -1,0 +1,81 @@
+name: Deploy to EC2
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.1'
+
+      - name: Build application
+        run: |
+          go mod download
+          GOOS=linux GOARCH=amd64 go build -o alpha_solve_server .
+
+      - name: Create deployment package
+        run: |
+          mkdir -p deployment
+          cp alpha_solve_server deployment/
+          cp deploy.sh deployment/
+          cp alpha-solve.service deployment/
+          tar -czf deployment.tar.gz deployment/
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Copy files to EC2
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          # Save SSH key
+          echo "$EC2_SSH_KEY" > ec2_key.pem
+          chmod 600 ec2_key.pem
+
+          # Copy deployment package (default user for Amazon Linux is ec2-user)
+          scp -o StrictHostKeyChecking=no -i ec2_key.pem deployment.tar.gz $EC2_USER@$EC2_HOST:/tmp/
+
+          # Execute deployment script on EC2
+          ssh -o StrictHostKeyChecking=no -i ec2_key.pem $EC2_USER@$EC2_HOST << 'EOF'
+            cd /tmp
+            tar -xzf deployment.tar.gz
+            cd deployment
+            chmod +x deploy.sh
+            sudo ./deploy.sh
+            rm -rf /tmp/deployment /tmp/deployment.tar.gz
+          EOF
+
+          # Clean up local SSH key
+          rm ec2_key.pem
+
+      - name: Verify deployment
+        env:
+          EC2_HOST: ${{ secrets.EC2_HOST }}
+          EC2_USER: ${{ secrets.EC2_USER }}
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+        run: |
+          echo "$EC2_SSH_KEY" > ec2_key.pem
+          chmod 600 ec2_key.pem
+
+          ssh -o StrictHostKeyChecking=no -i ec2_key.pem $EC2_USER@$EC2_HOST << 'EOF'
+            sudo systemctl status alpha-solve --no-pager
+          EOF
+
+          rm ec2_key.pem
+
