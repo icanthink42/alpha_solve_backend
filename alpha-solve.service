@@ -24,8 +24,10 @@ StandardOutput=journal
 StandardError=journal
 SyslogIdentifier=alpha-solve
 
-# Environment variables (add any needed here)
-# Environment="PORT=8080"
+# Environment variables
+# Load from environment file (not tracked in git)
+EnvironmentFile=/opt/alpha-solve/.env
+Environment="PORT=80"
 
 [Install]
 WantedBy=multi-user.target

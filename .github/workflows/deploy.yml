@@ -29,6 +29,8 @@ jobs:
           cp alpha_solve_server deployment/
           cp deploy.sh deployment/
           cp alpha-solve.service deployment/
+          cp schema.sql deployment/
+          cp atlas.hcl deployment/
           tar -czf deployment.tar.gz deployment/
 
       - name: Copy files to EC2

@@ -3,9 +3,11 @@ package main
 import (
 	"log"
 	"net/http"
+	"os"
 	"sync"
 
 	"github.com/gorilla/websocket"
+	"github.com/joho/godotenv"
 )
 
 var upgrader = websocket.Upgrader{
@@ -52,13 +54,13 @@ type BroadcastMessage struct {
 }
 
 // NewHub creates a new Hub
-func NewHub() *Hub {
+func NewHub(db *Database) *Hub {
 	return &Hub{
 		clients:        make(map[string]map[*Client]bool),
 		broadcast:      make(chan BroadcastMessage, 256),
 		register:       make(chan *Client),
 		unregister:     make(chan *Client),
-		projectManager: NewProjectManager(),
+		projectManager: NewProjectManager(db),
 	}
 }
 
@@ -73,6 +75,10 @@ func (h *Hub) Run() {
 			}
 			h.clients[client.projectID][client] = true
 			h.mu.Unlock()
+
+			// Increment connection count
+			h.projectManager.IncrementConnection(client.projectID)
+
 			log.Printf("[Hub] Client registered: %s (user: %s, project: %s)", client.name, client.userID, client.projectID)
 
 			// Send current project state to the new client
@@ -88,6 +94,9 @@ func (h *Hub) Run() {
 						delete(h.clients, client.projectID)
 					}
 					log.Printf("[Hub] Client unregistered: %s (user: %s, project: %s)", client.name, client.userID, client.projectID)
+
+					// Decrement connection count
+					h.projectManager.DecrementConnection(client.projectID)
 				}
 			}
 			h.mu.Unlock()
@@ -223,8 +232,34 @@ func handleWebSocket(hub *Hub, w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	// Load .env file if it exists (ignore error if not found)
+	godotenv.Load()
+
+	// Initialize database connection
+	var db *Database
+	var err error
+
+	// Database is optional - if DATABASE_URL is not set, run without persistence
+	if os.Getenv("DATABASE_URL") != "" {
+		db, err = NewDatabase()
+		if err != nil {
+			log.Printf("[Server] Warning: Could not connect to database: %v", err)
+			log.Printf("[Server] Running without persistence")
+			db = nil
+		} else {
+			// Database connected (migrations should be run via Atlas before starting)
+			if err := db.InitSchema(); err != nil {
+				log.Printf("[Server] Warning: Schema check failed: %v", err)
+			}
+			log.Println("[Server] Database connected successfully")
+			defer db.Close()
+		}
+	} else {
+		log.Println("[Server] DATABASE_URL not set, running without persistence")
+	}
+
 	// Create and start the hub
-	hub := NewHub()
+	hub := NewHub(db)
 	go hub.Run()
 
 	// Setup HTTP routes
@@ -239,7 +274,11 @@ func main() {
 	})
 
 	// Start server
-	addr := ":80"
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080" // Default to 8080 for local development
+	}
+	addr := ":" + port
 	log.Printf("[Server] Starting WebSocket server on %s", addr)
 	if err := http.ListenAndServe(addr, nil); err != nil {
 		log.Fatal("[Server] ListenAndServe error: ", err)

@@ -9,22 +9,55 @@ import (
 
 // ProjectManager manages project state
 type ProjectManager struct {
-	projects map[string]*Project
-	mu       sync.RWMutex
+	projects      map[string]*Project
+	lastAccess    map[string]time.Time
+	connectionCnt map[string]int
+	db            *Database
+	mu            sync.RWMutex
 }
 
 // NewProjectManager creates a new ProjectManager
-func NewProjectManager() *ProjectManager {
-	return &ProjectManager{
-		projects: make(map[string]*Project),
+func NewProjectManager(db *Database) *ProjectManager {
+	pm := &ProjectManager{
+		projects:      make(map[string]*Project),
+		lastAccess:    make(map[string]time.Time),
+		connectionCnt: make(map[string]int),
+		db:            db,
 	}
+
+	// Start background worker to unload inactive projects
+	go pm.unloadInactiveProjects()
+
+	return pm
 }
 
-// GetProject retrieves a project by ID
+// GetProject retrieves a project by ID, loading from DB if not in memory
 func (pm *ProjectManager) GetProject(projectID string) *Project {
-	pm.mu.RLock()
-	defer pm.mu.RUnlock()
-	return pm.projects[projectID]
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	// Check if project is in memory
+	if project, exists := pm.projects[projectID]; exists {
+		pm.lastAccess[projectID] = time.Now()
+		return project
+	}
+
+	// Try to load from database
+	if pm.db != nil {
+		project, err := pm.db.LoadProject(projectID)
+		if err != nil {
+			log.Printf("[ProjectManager] Error loading project from DB: %v", err)
+			return nil
+		}
+		if project != nil {
+			pm.projects[projectID] = project
+			pm.lastAccess[projectID] = time.Now()
+			log.Printf("[ProjectManager] Loaded project %s from database", projectID)
+			return project
+		}
+	}
+
+	return nil
 }
 
 // SetProject stores or updates a project
@@ -32,6 +65,16 @@ func (pm *ProjectManager) SetProject(project *Project) {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 	pm.projects[project.ID] = project
+	pm.lastAccess[project.ID] = time.Now()
+
+	// Save to database asynchronously
+	if pm.db != nil {
+		go func() {
+			if err := pm.db.SaveProject(project); err != nil {
+				log.Printf("[ProjectManager] Error saving project to DB: %v", err)
+			}
+		}()
+	}
 }
 
 // UpdateCell updates a specific cell in a project, or adds it if it doesn't exist
@@ -54,6 +97,18 @@ func (pm *ProjectManager) UpdateCell(projectID string, cellID string, cell Cell)
 	}
 
 	project.UpdatedAt = time.Now()
+	pm.lastAccess[projectID] = time.Now()
+
+	// Save to database asynchronously
+	if pm.db != nil {
+		projectCopy := *project
+		go func() {
+			if err := pm.db.SaveProject(&projectCopy); err != nil {
+				log.Printf("[ProjectManager] Error saving project to DB: %v", err)
+			}
+		}()
+	}
+
 	return true
 }
 
@@ -102,6 +157,18 @@ func (pm *ProjectManager) MoveCell(projectID string, cellID string, fromIndex in
 	project.Cells = append(project.Cells[:toIndex], append([]Cell{cell}, project.Cells[toIndex:]...)...)
 
 	project.UpdatedAt = time.Now()
+	pm.lastAccess[projectID] = time.Now()
+
+	// Save to database asynchronously
+	if pm.db != nil {
+		projectCopy := *project
+		go func() {
+			if err := pm.db.SaveProject(&projectCopy); err != nil {
+				log.Printf("[ProjectManager] Error saving project to DB: %v", err)
+			}
+		}()
+	}
+
 	return true
 }
 
@@ -561,4 +628,65 @@ func handleCellDelete(pm *ProjectManager, projectID string, data []byte) ([]byte
 
 	// Broadcast the deletion to all clients
 	return data, true
+}
+
+// IncrementConnection increments the connection count for a project
+func (pm *ProjectManager) IncrementConnection(projectID string) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.connectionCnt[projectID]++
+	pm.lastAccess[projectID] = time.Now()
+	log.Printf("[ProjectManager] Project %s connections: %d", projectID, pm.connectionCnt[projectID])
+}
+
+// DecrementConnection decrements the connection count for a project
+func (pm *ProjectManager) DecrementConnection(projectID string) {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	if pm.connectionCnt[projectID] > 0 {
+		pm.connectionCnt[projectID]--
+	}
+	pm.lastAccess[projectID] = time.Now()
+	log.Printf("[ProjectManager] Project %s connections: %d", projectID, pm.connectionCnt[projectID])
+}
+
+// unloadInactiveProjects runs in the background and unloads projects with no connections
+func (pm *ProjectManager) unloadInactiveProjects() {
+	ticker := time.NewTicker(10 * time.Minute)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		pm.mu.Lock()
+		now := time.Now()
+		projectsToUnload := []string{}
+
+		for projectID, lastAccess := range pm.lastAccess {
+			// Check if project has no connections and hasn't been accessed in 10 minutes
+			connectionCount := pm.connectionCnt[projectID]
+			if connectionCount == 0 && now.Sub(lastAccess) > 10*time.Minute {
+				projectsToUnload = append(projectsToUnload, projectID)
+			}
+		}
+
+		// Unload projects
+		for _, projectID := range projectsToUnload {
+			if project, exists := pm.projects[projectID]; exists {
+				// Save to database before unloading
+				if pm.db != nil {
+					if err := pm.db.SaveProject(project); err != nil {
+						log.Printf("[ProjectManager] Error saving project %s before unload: %v", projectID, err)
+						continue
+					}
+				}
+
+				// Remove from memory
+				delete(pm.projects, projectID)
+				delete(pm.lastAccess, projectID)
+				delete(pm.connectionCnt, projectID)
+				log.Printf("[ProjectManager] Unloaded inactive project: %s", projectID)
+			}
+		}
+
+		pm.mu.Unlock()
+	}
 }
