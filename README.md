@@ -75,4 +75,3 @@ DATABASE_URL='postgres://...' go run .
 
 - `ws://host/` - WebSocket connection (requires `name`, `projectId`, `userId` query params)
 - `GET /health` - Health check endpoint
-
