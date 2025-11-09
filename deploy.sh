@@ -50,6 +50,7 @@ echo "Installing new binary and schema..."
 cp alpha_solve_server $APP_DIR/
 cp schema.sql $APP_DIR/
 cp atlas.hcl $APP_DIR/
+cp -r migrations $APP_DIR/ 2>/dev/null || echo "No migrations directory"
 chmod +x $APP_DIR/alpha_solve_server
 chown -R $APP_USER:$APP_USER $APP_DIR
 

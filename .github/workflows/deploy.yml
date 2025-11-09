@@ -31,6 +31,7 @@ jobs:
           cp alpha-solve.service deployment/
           cp schema.sql deployment/
           cp atlas.hcl deployment/
+          cp -r migrations deployment/ 2>/dev/null || echo "No migrations directory yet"
           tar -czf deployment.tar.gz deployment/
 
       - name: Copy files to EC2
